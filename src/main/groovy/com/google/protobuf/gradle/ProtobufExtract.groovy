@@ -31,7 +31,6 @@ package com.google.protobuf.gradle
 
 import com.google.common.base.Preconditions
 import org.gradle.api.DefaultTask
-import org.gradle.api.GradleException
 import org.gradle.api.tasks.TaskAction
 
 /**
@@ -43,19 +42,21 @@ class ProtobufExtract extends DefaultTask {
    * The directory for the extracted files.
    */
   private File destDir
+  private Boolean isTest = null
 
-  protected void setDestDir(File destDir) {
-    Preconditions.checkState(this.destDir == null, 'destDir already set')
-    this.destDir = destDir
-    outputs.dir destDir
+  public void setIsTest(boolean isTest) {
+    this.isTest = isTest
   }
 
-  protected File getDestDir() {
-    return destDir
+  public boolean getIsTest() {
+    Preconditions.checkNotNull(isTest)
+    return isTest
   }
 
   @TaskAction
-  def extract() {
+  void extract() {
+    destDir.mkdir()
+    boolean warningLogged = false
     inputs.files.each { file ->
       logger.debug "Extracting protos from ${file} to ${destDir}"
       if (file.isDirectory()) {
@@ -67,6 +68,15 @@ class ProtobufExtract extends DefaultTask {
           into(destDir)
         }
       } else if (file.path.endsWith('.proto')) {
+        if (!warningLogged) {
+          warningLogged = true
+          project.logger.warn "proto file '${file.path}' directly specified in configuration. " +
+              "It's likely you specified files('path/to/foo.proto') or " +
+              "fileTree('path/to/directory') in protobuf or compile configuration. " +
+              "This makes you vulnerable to " +
+              "https://github.com/google/protobuf-gradle-plugin/issues/248. " +
+              "Please use files('path/to/directory') instead."
+        }
         project.copy {
           includeEmptyDirs(false)
           from(file.path)
@@ -80,7 +90,10 @@ class ProtobufExtract extends DefaultTask {
           }
           into(destDir)
         }
-      } else if (file.path.endsWith('.tar') || file.path.endsWith('.tar.gz') || file.path.endsWith('.tar.bz2')) {
+      } else if (file.path.endsWith('.tar')
+              || file.path.endsWith('.tar.gz')
+              || file.path.endsWith('.tar.bz2')
+              || file.path.endsWith('.tgz')) {
         project.copy {
           includeEmptyDirs(false)
           from(project.tarTree(file.path)) {
@@ -89,8 +102,18 @@ class ProtobufExtract extends DefaultTask {
           into(destDir)
         }
       } else {
-        logger.debug "Skipping unsupported file type (${file.path}); handles only jar, tar, tar.gz & tar.bz2"
+        logger.debug "Skipping unsupported file type (${file.path}); handles only jar, tar, tar.gz, tar.bz2 & tgz"
       }
     }
+  }
+
+  protected void setDestDir(File destDir) {
+    Preconditions.checkState(this.destDir == null, 'destDir already set')
+    this.destDir = destDir
+    outputs.dir destDir
+  }
+
+  protected File getDestDir() {
+    return destDir
   }
 }

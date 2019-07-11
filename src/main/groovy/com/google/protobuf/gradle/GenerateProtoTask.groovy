@@ -31,12 +31,18 @@ package com.google.protobuf.gradle
 
 import com.google.common.base.Preconditions
 import com.google.common.collect.ImmutableList
-
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Named
 import org.gradle.api.NamedDomainObjectContainer
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.FileCollection
+import org.gradle.api.file.SourceDirectorySet
+import org.gradle.api.internal.file.DefaultSourceDirectorySet
+import org.gradle.api.internal.file.FileResolver
+import org.gradle.api.internal.file.collections.DefaultDirectoryFileTreeFactory
 import org.gradle.api.logging.LogLevel
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.TaskAction
 import org.gradle.util.ConfigureUtil
@@ -46,11 +52,20 @@ import org.gradle.util.ConfigureUtil
  */
 // TODO(zhangkun83): add per-plugin output dir reconfiguraiton.
 public class GenerateProtoTask extends DefaultTask {
+  // Windows CreateProcess has command line limit of 32768:
+  // https://msdn.microsoft.com/en-us/library/windows/desktop/ms682425(v=vs.85).aspx
+  static final int WINDOWS_CMD_LENGTH_LIMIT = 32760
+  // Extra command line length when added an additional argument on Windows.
+  // Two quotes and a space.
+  static final int CMD_ARGUMENT_EXTRA_LENGTH = 3
 
-  private final List includeDirs = new ArrayList()
+  // include dirs are passed to the '-I' option of protoc.  They contain protos
+  // that may be "imported" from the source protos, but will not be compiled.
+  private final ConfigurableFileCollection includeDirs = project.files()
+  // source files are proto files that will be compiled by protoc
+  private final ConfigurableFileCollection sourceFiles = project.files()
 
   private final NamedDomainObjectContainer<PluginOptions> objcOpt
-
   private final NamedDomainObjectContainer<PluginOptions> builtins
   private final NamedDomainObjectContainer<PluginOptions> plugins
 
@@ -65,6 +80,7 @@ public class GenerateProtoTask extends DefaultTask {
   private ImmutableList<String> flavors
   private String buildType
   private boolean isTestVariant
+  private FileResolver fileResolver
 
   /**
    * If true, will set the protoc flag
@@ -72,7 +88,7 @@ public class GenerateProtoTask extends DefaultTask {
    *
    * Default: false
    */
-  public boolean generateDescriptorSet
+  boolean generateDescriptorSet
 
   /**
    * Configuration object for descriptor generation details.
@@ -84,39 +100,94 @@ public class GenerateProtoTask extends DefaultTask {
      *
      * Default: null
      */
-    public GString path
+    GString path
 
     /**
      * If true, source information (comments, locations) will be included in the descriptor set.
      *
      * Default: false
      */
-    public boolean includeSourceInfo
+    boolean includeSourceInfo
 
     /**
      * If true, imports are included in the descriptor set, such that it is self-containing.
      *
      * Default: false
      */
-    public boolean includeImports
+    boolean includeImports
   }
 
-  public final DescriptorSetOptions descriptorSetOptions = new DescriptorSetOptions();
+  final DescriptorSetOptions descriptorSetOptions = new DescriptorSetOptions()
 
-  private static enum State {
-    INIT, CONFIG, FINALIZED
+  // protoc allows you to prefix comma-delimited options to the path in
+  // the --*_out flags, e.g.,
+  // - Without options: --java_out=/path/to/output
+  // - With options: --java_out=option1,option2:/path/to/output
+  // This method generates the prefix out of the given options.
+  static String makeOptionsPrefix(List<String> options) {
+    StringBuilder prefix = new StringBuilder()
+    if (!options.isEmpty()) {
+      options.each { option ->
+        if (prefix.length() > 0) {
+          prefix.append(',')
+        }
+        prefix.append(option)
+      }
+      prefix.append(':')
+    }
+    return prefix.toString()
   }
 
-  private State state = State.INIT
-
-
-  private void checkInitializing() {
-    Preconditions.checkState(state == State.INIT, 'Should not be called after initilization has finished')
+  static List<List<String>> generateCmds(List<String> baseCmd, List<File> protoFiles, int cmdLengthLimit) {
+    List<List<String>> cmds = []
+    if (!protoFiles.isEmpty()) {
+      int baseCmdLength = baseCmd.sum { it.length() + CMD_ARGUMENT_EXTRA_LENGTH }
+      List<String> currentArgs = []
+      int currentArgsLength = 0
+      for (File proto: protoFiles) {
+        String protoFileName = proto
+        int currentFileLength = protoFileName.length() + CMD_ARGUMENT_EXTRA_LENGTH
+        // Check if appending the next proto string will overflow the cmd length limit
+        if (baseCmdLength + currentArgsLength + currentFileLength > cmdLengthLimit) {
+          // Add the current cmd before overflow
+          cmds.add(baseCmd + currentArgs)
+          currentArgs.clear()
+          currentArgsLength = 0
+        }
+        // Append the proto file to the args
+        currentArgs.add(protoFileName)
+        currentArgsLength += currentFileLength
+      }
+      // Add the last cmd for execution
+      cmds.add(baseCmd + currentArgs)
+    }
+    return cmds
   }
 
-  private void checkCanConfig() {
-    Preconditions.checkState(state == State.CONFIG || state == State.INIT,
-        'Should not be called after configuration has finished')
+  static int getCmdLengthLimit() {
+    return getCmdLengthLimit(System.getProperty("os.name"))
+  }
+
+  static int getCmdLengthLimit(String os) {
+    if (os != null && os.toLowerCase(Locale.ROOT).indexOf("win") > -1) {
+      return WINDOWS_CMD_LENGTH_LIMIT
+    }
+    return Integer.MAX_VALUE
+  }
+
+  static String makeObjcOptions(List<String> options) {
+    StringBuilder prefix = new StringBuilder()
+    if (!options.isEmpty()) {
+      options.each { option ->
+        if (prefix.length() > 0) {
+          prefix.append(',')
+        } else {
+          prefix.append("--objc_opt=")
+        }
+        prefix.append(option)
+      }
+    }
+    return prefix.toString()
   }
 
   void setOutputBaseDir(String outputBaseDir) {
@@ -155,11 +226,20 @@ public class GenerateProtoTask extends DefaultTask {
     this.buildType = buildType
   }
 
+  void setFileResolver(FileResolver fileResolver) {
+    checkInitializing()
+    this.fileResolver = fileResolver
+  }
+
   SourceSet getSourceSet() {
     Preconditions.checkState(!Utils.isAndroidProject(project),
         'sourceSet should not be used in an Android project')
     Preconditions.checkNotNull(sourceSet, 'sourceSet is not set')
     return sourceSet
+  }
+
+  FileCollection getSourceFiles() {
+    return sourceFiles
   }
 
   Object getVariant() {
@@ -186,8 +266,15 @@ public class GenerateProtoTask extends DefaultTask {
   String getBuildType() {
     Preconditions.checkState(Utils.isAndroidProject(project),
         'buildType should not be used in a Java project')
-    Preconditions.checkNotNull(buildType, 'buildType is not set')
+    Preconditions.checkState(
+        variant.name == 'test' || buildType,
+        'buildType is not set and task is not for local unit test variant')
     return buildType
+  }
+
+  FileResolver getFileResolver() {
+    Preconditions.checkNotNull(fileResolver)
+    return fileResolver
   }
 
   void doneInitializing() {
@@ -205,8 +292,7 @@ public class GenerateProtoTask extends DefaultTask {
       throw new IllegalStateException(
           "requested descriptor path but descriptor generation is off")
     }
-    return descriptorSetOptions.path != null
-      ? descriptorSetOptions.path : "${outputBaseDir}/descriptor_set.desc"
+    return descriptorSetOptions.path != null ? descriptorSetOptions.path : "${outputBaseDir}/descriptor_set.desc"
   }
 
   public GenerateProtoTask() {
@@ -237,7 +323,7 @@ public class GenerateProtoTask extends DefaultTask {
   }
 
   /**
-   * Configures the protoc builtins in a closure, which will be maniuplating a
+   * Configures the protoc builtins in a closure, which will be manipulating a
    * NamedDomainObjectContainer<PluginOptions>.
    */
   public void builtins(Closure configureClosure) {
@@ -280,20 +366,39 @@ public class GenerateProtoTask extends DefaultTask {
   /**
    * Add a directory to protoc's include path.
    */
-  public void include(Object dir) {
+  public void addIncludeDir(FileCollection dir) {
     checkCanConfig()
-    if (dir instanceof File) {
-      includeDirs.add(dir)
-    } else {
-      includeDirs.add(project.file(dir))
+    includeDirs.from(dir)
+    // Register all files under the directory as input so that Gradle will check their changes for
+    // incremental build
+    inputs.files(dir).withPathSensitivity(PathSensitivity.RELATIVE)
+  }
+
+  /**
+   * Add a collection of proto source files to be compiled.
+   */
+  public void addSourceFiles(FileCollection files) {
+    checkCanConfig()
+    sourceFiles.from(files)
+    // Register the files as input so that Gradle will check their changes for incremental build
+    inputs.files(files).withPathSensitivity(PathSensitivity.RELATIVE)
+  }
+
+  /**
+   * Returns true if the Java source set or Android variant is test related.
+   */
+  public boolean getIsTest() {
+    if (Utils.isAndroidProject(project)) {
+      return isTestVariant
     }
+    return Utils.isTest(sourceSet.name)
   }
 
   /**
    * The container of command-line options for a protoc plugin or a built-in output.
    */
   public static class PluginOptions implements Named {
-    private final ArrayList<String> options = new ArrayList<String>()
+    private final List<String> options = []
     private final String name
     private String outputSubDir
 
@@ -324,7 +429,7 @@ public class GenerateProtoTask extends DefaultTask {
     /**
      * Set the output directory for this plugin, relative to {@link GenerateProtoTask#outputBaseDir}.
      */
-    public setOutputSubDir(String outputSubDir) {
+    void setOutputSubDir(String outputSubDir) {
       this.outputSubDir = outputSubDir
     }
 
@@ -333,9 +438,9 @@ public class GenerateProtoTask extends DefaultTask {
      */
     public String getOutputSubDir() {
       if (outputSubDir != null) {
-        return outputSubDir;
+        return outputSubDir
       }
-      return name;
+      return name
     }
   }
 
@@ -343,130 +448,131 @@ public class GenerateProtoTask extends DefaultTask {
   //    protoc invocation logic
   //===========================================================================
 
-  // protoc allows you to prefix comma-delimited options to the path in
-  // the --*_out flags, e.g.,
-  // - Without options: --java_out=/path/to/output
-  // - With options: --java_out=option1,option2:/path/to/output
-  // This method generates the prefix out of the given options.
-  static String makeOptionsPrefix(List<String> options) {
-    StringBuilder prefix = new StringBuilder()
-    if (!options.isEmpty()) {
-      options.each { option ->
-        if (prefix.length() > 0) {
-          prefix.append(',')
-        }
-        prefix.append(option)
-      }
-      prefix.append(':')
-    }
-    return prefix.toString()
-  }
-
-  static String makeObjcOptions(List<String> options) {
-    StringBuilder prefix = new StringBuilder()
-    if (!options.isEmpty()) {
-      options.each { option ->
-        if (prefix.length() > 0) {
-          prefix.append(',')
-        } else {
-          prefix.append("--objc_opt=")
-        }
-        prefix.append(option)
-      }
-    }
-    return prefix.toString()
-  }
-
   String getOutputDir(PluginOptions plugin) {
     return "${outputBaseDir}/${plugin.outputSubDir}"
   }
 
-  Collection<File> getAllOutputDirs() {
-    ImmutableList.Builder<File> dirs = ImmutableList.builder()
+  /**
+   * Returns a {@code SourceDirectorySet} representing the generated source
+   * directories.
+   */
+  SourceDirectorySet getOutputSourceDirectorySet() {
+    String srcSetName = "generate-proto-" + name
+    SourceDirectorySet srcSet
+    if (Utils.compareGradleVersion(project, "5.0") < 0) {
+      Preconditions.checkNotNull(fileResolver)
+      srcSet = new DefaultSourceDirectorySet(
+          srcSetName, this.fileResolver, new DefaultDirectoryFileTreeFactory())
+    } else {
+      srcSet = project.objects.sourceDirectorySet(srcSetName, srcSetName)
+    }
     builtins.each { builtin ->
-      dirs.add(new File(getOutputDir(builtin)))
+      srcSet.srcDir new File(getOutputDir(builtin))
     }
     plugins.each { plugin ->
-      dirs.add(new File(getOutputDir(plugin)))
+      srcSet.srcDir new File(getOutputDir(plugin))
     }
-    return dirs.build()
+    return srcSet
   }
 
   @TaskAction
-  def compile() {
+  void compile() {
     Preconditions.checkState(state == State.FINALIZED, 'doneConfig() has not been called')
 
     ToolsLocator tools = project.protobuf.tools
     // Sort to ensure generated descriptors have a canonical representation
     // to avoid triggering unnecessary rebuilds downstream
-    List<File> protoFiles = inputs.sourceFiles.files.sort()
+    List<File> protoFiles = sourceFiles.files.sort()
 
     [builtins, plugins]*.each { plugin ->
       File outputDir = new File(getOutputDir(plugin))
       outputDir.mkdirs()
     }
 
-    def cmd = [ tools.protoc.path ]
+    // The source directory designated from sourceSet may not actually exist on disk.
+    // "include" it only when it exists, so that Gradle and protoc won't complain.
+    List<String> dirs = includeDirs.filter { it.exists() }*.path.collect { "-I${it}" }
+    logger.debug "ProtobufCompile using directories ${dirs}"
+    logger.debug "ProtobufCompile using files ${protoFiles}"
+    List<String> baseCmd = [ tools.protoc.path ]
+    baseCmd.addAll(dirs)
 
     objcOpt.each { opt ->
       String args = makeObjcOptions(opt.options)
       if (!args.isEmpty()) {
-        cmd += "${makeObjcOptions(opt.options)}"
+        baseCmd += "${args}"
       }
     }
 
     // Handle code generation built-ins
     builtins.each { builtin ->
       String outPrefix = makeOptionsPrefix(builtin.options)
-      cmd += "--${builtin.name}_out=${outPrefix}${getOutputDir(builtin)}"
+      baseCmd += "--${builtin.name}_out=${outPrefix}${getOutputDir(builtin)}"
     }
 
     // Handle code generation plugins
     plugins.each { plugin ->
       String name = plugin.name
       ExecutableLocator locator = tools.plugins.findByName(name)
-      if (locator == null) {
-        throw new GradleException("Codegen plugin ${name} not defined")
+      if (locator != null) {
+        baseCmd += "--plugin=protoc-gen-${name}=${locator.path}"
+      } else {
+        logger.warn "protoc plugin '${name}' not defined. Trying to use 'protoc-gen-${name}' from system path"
       }
       String pluginOutPrefix = makeOptionsPrefix(plugin.options)
-      cmd += "--${name}_out=${pluginOutPrefix}${getOutputDir(plugin)}"
-      cmd += "--plugin=protoc-gen-${name}=${locator.path}"
+      baseCmd += "--${name}_out=${pluginOutPrefix}${getOutputDir(plugin)}"
     }
 
-    def dirs = includeDirs*.path.collect {"-I${it}"}
-    logger.debug "ProtobufCompile using directories ${dirs}"
-    logger.debug "ProtobufCompile using files ${protoFiles}"
-    cmd.addAll(dirs)
-
     if (generateDescriptorSet) {
-      def path = getDescriptorPath()
+      String path = getDescriptorPath()
       // Ensure that the folder for the descriptor exists;
       // the user may have set it to point outside an existing tree
-      def folder = new File(path).parentFile
+      File folder = new File(path).parentFile
       if (!folder.exists()) {
         folder.mkdirs()
       }
-      cmd += "--descriptor_set_out=${path}"
+      baseCmd += "--descriptor_set_out=${path}"
       if (descriptorSetOptions.includeImports) {
-        cmd += "--include_imports"
+        baseCmd += "--include_imports"
       }
       if (descriptorSetOptions.includeSourceInfo) {
-        cmd += "--include_source_info"
+        baseCmd += "--include_source_info"
       }
     }
 
-    cmd.addAll protoFiles
+    List<List<String>> cmds = generateCmds(baseCmd, protoFiles, getCmdLengthLimit())
+    for (List<String> cmd : cmds) {
+      compileFiles(cmd)
+    }
+  }
+
+  private static enum State {
+    INIT, CONFIG, FINALIZED
+  }
+
+  private State state = State.INIT
+
+  private void checkInitializing() {
+    Preconditions.checkState(state == State.INIT, 'Should not be called after initilization has finished')
+  }
+
+  private void checkCanConfig() {
+    Preconditions.checkState(state == State.CONFIG || state == State.INIT,
+        'Should not be called after configuration has finished')
+  }
+
+  private void compileFiles(List<String> cmd) {
     logger.log(LogLevel.INFO, cmd.toString())
-    def stdout = new StringBuffer()
-    def stderr = new StringBuffer()
+
+    StringBuffer stdout = new StringBuffer()
+    StringBuffer stderr = new StringBuffer()
     Process result = cmd.execute()
     result.waitForProcessOutput(stdout, stderr)
-    def output = "protoc: stdout: ${stdout}. stderr: ${stderr}"
+    String output = "protoc: stdout: ${stdout}. stderr: ${stderr}"
     if (result.exitValue() == 0) {
       logger.log(LogLevel.INFO, output)
     } else {
       throw new GradleException(output)
     }
   }
-
 }

@@ -27,11 +27,8 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package com.google.protobuf.gradle
 
-import com.google.common.collect.ArrayListMultimap
-import com.google.common.collect.Multimap
 import org.gradle.api.Project
 import org.gradle.api.internal.file.FileResolver
 import org.gradle.util.ConfigureUtil
@@ -40,13 +37,13 @@ import org.gradle.util.ConfigureUtil
  * Adds the protobuf {} block as a property of the project.
  */
 class ProtobufConvention {
-    def ProtobufConvention(Project project, FileResolver fileResolver) {
+    ProtobufConvention(Project project, FileResolver fileResolver) {
         protobuf = new ProtobufConfigurator(project, fileResolver)
     }
 
-    def final ProtobufConfigurator protobuf
+    final ProtobufConfigurator protobuf
 
-    def protobuf(Closure configureClosure) {
+    ProtobufConfigurator protobuf(Closure configureClosure) {
         ConfigureUtil.configure(configureClosure, protobuf)
     }
 }

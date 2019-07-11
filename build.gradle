@@ -7,9 +7,11 @@ Base directory: $projectDir
 Running script ${relativePath(buildFile)}
 """
 
+apply plugin: 'codenarc'
 apply plugin: 'idea'
 apply plugin: 'eclipse'
 apply plugin: 'groovy'
+apply plugin: 'kotlin'
 apply plugin: 'maven'
 apply plugin: 'signing'
 apply plugin: 'com.jfrog.bintray'
@@ -17,7 +19,7 @@ apply plugin: 'com.gradle.plugin-publish'
 apply plugin: 'com.github.ben-manes.versions'
 
 group = 'com.google.protobuf'
-version = '0.8.2.FINAM-SNAPSHOT'
+version = '0.8.11.FINAM-SNAPSHOT'
 
 ext.isReleaseVersion = !version.endsWith("SNAPSHOT")
 
@@ -28,31 +30,49 @@ buildscript {
 
     dependencies {
         classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.6'
-        classpath "com.gradle.publish:plugin-publish-plugin:0.9.5"
+        classpath "com.gradle.publish:plugin-publish-plugin:0.9.7"
         classpath "com.github.ben-manes:gradle-versions-plugin:0.12.0"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.3.10"
     }
 }
 
 repositories {
     maven { url "https://plugins.gradle.org/m2/" }
+    maven { url "https://repo.gradle.org/gradle/libs-releases-local/" }
+    google()
+    // Needed for resolving 'kotlinx-metadata-jvm'
+    // A transitive dependency of gradle Kotlin DSL
+    maven { url "https://kotlin.bintray.com/kotlinx/" }
 }
 
-// Write the plugin's classpath to a file to share with the tests
+configurations {
+    // Test projects may have runtime dependencies such as the kotlin plugin
+    testProjectRuntime
+}
+
+/**
+ * Write file containing all the things that should be in the test projects' class path. This
+ * includes the current SNAPSHOT version of protobuf-gradle-plugin and whatever else may be
+ * needed by the test projects such as other plugins or libraries.
+ */
 task createClasspathManifest {
     def outputDir = file("$buildDir/$name")
 
     inputs.files sourceSets.main.runtimeClasspath
+    inputs.files configurations.testProjectRuntime
     outputs.dir outputDir
 
     doLast {
         outputDir.mkdirs()
-        file("$outputDir/plugin-classpath.txt").text = sourceSets.main.runtimeClasspath.join("\n")
+        file("$outputDir/plugin-classpath.txt").text = inputs.files.join("\n")
     }
 }
 
 dependencies {
     compileOnly gradleApi()
     compileOnly localGroovy()
+    compileOnly "org.gradle:gradle-kotlin-dsl:1.0.4"
+
     compile 'com.google.guava:guava:18.0'
     compile 'com.google.gradle:osdetector-gradle-plugin:1.4.0'
     compile 'commons-lang:commons-lang:2.6'
@@ -66,6 +86,14 @@ dependencies {
     }
     testCompile 'commons-io:commons-io:2.5'
 
+    // This kotlin version needs to be compatible with the 
+    // android plugin being used in the test runtime.
+    testProjectRuntime "org.jetbrains.kotlin:kotlin-gradle-plugin:1.3.11"
+
+    // Add android plugin to the test classpath, so that we can jump into class definitions,
+    // read their sources, set break points, etc while debugging android unit tests.
+    // Change the version if necessary to match the specific unit test.
+    testRuntime 'com.android.tools.build:gradle:2.3.0'
     // Add the classpath file to the test runtime classpath
     testRuntime files(createClasspathManifest)
 }
@@ -163,19 +191,21 @@ pluginBundle {
   }
 }
 
-// Releases must be built on Java 1.7. Building on Java 1.8 will make the
-// plugin runnable only on Java 1.8.
-// See https://github.com/grpc/grpc-java/issues/805
-task checkJavaVersion << {
+// Releases must be built on Java 1.8.
+tasks.create("checkJavaVersion").doLast {
   JavaVersion javaVersion = JavaVersion.current()
   if (!javaVersion.isJava8()) {
     throw new GradleException(
-        "The plugin must be published under Java 1.7 but ${javaVersion} is found")
+        "The plugin must be published under Java 1.8 but ${javaVersion} is found")
   }
 }
 [uploadArchives, publishPlugins]*.dependsOn checkJavaVersion
 
 if (System.env.TRAVIS == 'true') {
+  // Normally html output is more user friendly,
+  // but we want a console printable file for Travis logs
+  project.codenarc.reportFormat = 'text'
+
   // To limit the memory usage when running in Travis.
   // Travis tend to kill tasks that use too much memory.
   allprojects {
@@ -193,7 +223,21 @@ if (System.env.TRAVIS == 'true') {
   test {
     testLogging {
       showStandardStreams = true
+      exceptionFormat = 'full'
+      showExceptions true
+      showCauses true
+      showStackTraces true
     }
   }
 }
 
+// Required in order to support building a mixed kotlin/groovy project. With out this,
+// we would get a cyclic dependency error, since both compileKotlin and compileGroovy
+// depend on compileJava.
+// https://discuss.gradle.org/t/kotlin-groovy-and-java-compilation/14903/10
+project.afterEvaluate {
+  compileGroovy.dependsOn = compileGroovy.taskDependencies.mutableValues - 'compileJava'
+  compileKotlin.dependsOn compileGroovy
+  compileKotlin.classpath += files(compileGroovy.destinationDir)
+  classes.dependsOn compileKotlin
+}

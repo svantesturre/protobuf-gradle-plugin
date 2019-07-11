@@ -1,11 +1,5 @@
-:exclamation: Starting from version __0.7.6__, the plugin requires Gradle __2.12__ and later.
-Please check your Gradle version if you see the following error:
-```
-Error:Unable to load class 'org.gradle.api.internal.file.collections.DefaultDirectoryFileTreeFactory'.
-```
-
 :exclamation: Please [read release notes](https://github.com/google/protobuf-gradle-plugin/releases)
-before upgrading the plugin.
+before upgrading the plugin, as usage or compatibility requirements may change.
 
 # Protobuf Plugin for Gradle [![Status](https://travis-ci.org/google/protobuf-gradle-plugin.svg?branch=master)](https://travis-ci.org/google/protobuf-gradle-plugin)
 The Gradle plugin that compiles Protocol Buffer (aka. Protobuf) definition
@@ -20,7 +14,7 @@ For more information about the Protobuf Compiler, please refer to
 [Google Developers Site](https://developers.google.com/protocol-buffers/docs/reference/java-generated?csw=1).
 
 ## Latest Version
-The latest version is ``0.8.1``. It requires at least __Gradle 2.12__ and __Java 7__.
+The latest version is ``0.8.10``. It requires at least __Gradle 3.0__ and __Java 8__.
 It is available on Maven Central. To add dependency to it:
 ```gradle
 buildscript {
@@ -28,44 +22,34 @@ buildscript {
     mavenCentral()
   }
   dependencies {
-    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.1'
+    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.10'
   }
 }
 ```
 
-Latest changes are included in the SNAPSHOT artifact:
-```gradle
-buildscript {
-  repositories {
-    maven {
-       url 'https://oss.sonatype.org/content/repositories/snapshots/'
-    }
-  }
-  dependencies {
-    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.2-SNAPSHOT'
-  }
-}
-```
+To try out the head version, you can download the source and build it
+with ``./gradlew install -x test`` (we skip tests here because they
+require Android SDK), then:
 
-However, the availability and freshness of the SNAPSHOT artifact are not
-guaranteed. You can instead download the source and build it with ``./gradlew
-install``, then:
 ```gradle
 buildscript {
   repositories {
     mavenLocal()
   }
   dependencies {
-    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.2-SNAPSHOT'
+    classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.11-SNAPSHOT'
   }
 }
 ```
 
 ## Examples
 
-A stand-alone example project is located under [exampleProject]
-(https://github.com/google/protobuf-gradle-plugin/tree/master/exampleProject).
-Run `../gradlew build` under that directory to test it out.
+Stand-alone examples are available for each of gradle's supported languages.
+ * [Groovy](https://github.com/google/protobuf-gradle-plugin/tree/master/examples/exampleProject) ___(Default)___
+   * Run `../../gradlew build` under the example directory to test it out.
+ * [Kotlin](https://github.com/google/protobuf-gradle-plugin/tree/master/examples/exampleKotlinDslProject) ___(Experimental)___
+   * Run `./gradlew build` under the Kotlin example directory to test it out. This example is set up with Gradle 4.10, the minimum required version.
+
 
 Directories that start with `testProject` can also serve as usage
 examples for advanced options, although they cannot be compiled as
@@ -96,7 +80,7 @@ The order of the plugins doesn't matter:
 
 ```gradle
 plugins {
-  id "com.google.protobuf" version "0.8.1"
+  id "com.google.protobuf" version "0.8.10"
   id "java"
 }
 ```
@@ -110,7 +94,7 @@ _sourceSet_ (or _variant_ in an Android project) are compiled in a single
 ``protoc`` run, and the generated files are added to the input of the Java
 compilation run of that _sourceSet_ (or _variant_).
 
-### Cutomizing source directories
+### Customizing source directories
 The plugin adds a new sources block named ``proto`` alongside ``java`` to every
 sourceSet. By default, it includes all ``*.proto`` files under
 ``src/$sourceSetName/proto``. You can customize it in the same way as you would
@@ -195,21 +179,25 @@ protobuf {
 }
 ```
 
-Mulitple assignments are allowed in the ``protoc`` block. The last one wins.
+Multiple assignments are allowed in the ``protoc`` block. The last one wins.
 
-You may also run ``protoc`` with codegen plugins. You need to define all the
-codegen plugins you will use in the ``plugins`` block, by specifying the
-downloadable artifact or a local path, in the same syntax as in the ``protoc``
-block above. This will __not__ apply the plugins. You need to configure the
-tasks in the ``generateProtoTasks`` block introduced below to apply the plugins
+You may also run ``protoc`` with codegen plugins.  For a codegen
+plugin named as "foo", ``protoc`` will by default use
+``protoc-gen-foo`` from system search path.  You can also specify a
+downloadable artifact or a local path for it in the ``plugins`` block,
+in the same syntax as in the ``protoc`` block above. This will __not__
+apply the plugins. You need to configure the tasks in the
+``generateProtoTasks`` block introduced below to apply the plugins
 defined here.
 
 ```gradle
 protobuf {
   ...
-  // Configure the codegen plugins
+  // Locate the codegen plugins
   plugins {
-    // Define a plugin with name 'grpc'
+    // Locate a plugin with name 'grpc'. This step is optional.
+    // If you don't locate it, protoc will try to use "protoc-gen-grpc" from
+    // system search path.
     grpc {
       artifact = 'io.grpc:protoc-gen-grpc-java:1.0.0-pre2'
       // or
@@ -221,6 +209,12 @@ protobuf {
   ...
 }
 ```
+
+The syntax for `artifact` follows [Artifact Classifiers](https://docs.gradle.org/3.3/userguide/dependency_management.html#sub:classifiers)
+where the default classifier is `project.osdetector.classifier` (ie
+`"${project.osdetector.os}-${project.osdetector.arch}"`) and the default extension is `"exe"`.
+Non-C++ implementations of codegen plugins can be used if a constant
+`classifier` is specified (eg `"com.example:example-generator:1.0.0:-jvm8_32"`).
 
 #### Customize code generation tasks
 
@@ -287,39 +281,57 @@ Put options in the braces if wanted.  For example:
 
 ```gradle
 task.builtins {
+  // This yields
+  // "--java_out=example_option1=true,example_option2:/path/to/output"
+  // on the protoc commandline, which is equivalent to
+  // "--java_out=/path/to/output --java_opt=example_option1=true,example_option2"
+  // with the latest version of protoc.
   java {
     option 'example_option1=true'
     option 'example_option2'
   }
   // Add cpp output without any option.
   // DO NOT omit the braces if you want this builtin to be added.
+  // This yields
+  // "--cpp_out=/path/to/output" on the protoc commandline.
   cpp { }
 }
 
 task.plugins {
   // Add grpc output without any option.  grpc must have been defined in the
   // protobuf.plugins block.
+  // This yields
+  // "--grpc_out=/path/to/output" on the protoc commandline.
   grpc { }
 }
 ```
 
 #### Default outputs
 
-**Java** projects: the `java` builtin is added by default.  If you
-wish to remove this output, for example, to only generate for Python:
+**Java** projects: the `java` builtin is added by default: without any further specification, Java classes will be generated during the build process.
+
+**Python** output can be generated by adding the `python` builtin:
 
 ```gradle
 protobuf {
+  generatedFilesDir = "$projectDir/generated"
+
   generateProtoTasks {
     all().each { task ->
       task.builtins {
-        remove java
+        // Generates Python code in the output folder:
         python { }
+
+        // If you wish to avoid generating Java files:
+        remove java
       }
     }
   }
 }
 ```
+
+See [this section](#change-where-files-are-generated) for details about where the code will be generated.
+
 
 **Android** projects: no default output will be added.  Since Protobuf
 3.0.0, [protobuf-lite](http://search.maven.org/#search%7Cga%7C1%7Ca%3A%22protobuf-lite%22)
@@ -334,6 +346,10 @@ dependencies {
 }
 
 protobuf {
+  protoc {
+    // You still need protoc like in the non-Android case
+    artifact = 'com.google.protobuf:protoc:3.0.0'
+  }
   plugins {
     javalite {
       // The codegen for lite comes as a separate artifact
@@ -342,6 +358,11 @@ protobuf {
   }
   generateProtoTasks {
     all().each { task ->
+      task.builtins {
+        // In most cases you don't need the full Java output
+        // if you use the lite output.
+        remove java
+      }
       task.plugins {
         javalite { }
       }
@@ -373,7 +394,7 @@ protobuf {
 }
 ```
 
-#### Change where the generated files are
+#### Change where files are generated
 
 By default generated Java files are under
 ``$generatedFilesBaseDir/$sourceSet/$builtinPluginName``, where
@@ -407,12 +428,16 @@ changed by setting the ``outputSubDir`` property in the ``builtins`` or
 ### Protos in dependencies
 
 If a Java project contains proto files, they will be packaged in the jar files
-along with the compiled classes. If a ``compile`` configuration has a
-dependency on a project or library jar that contains proto files, they will be
-added to the ``--proto_path`` flag of the protoc command line, so that they can
-be imported in the proto files of the dependent project. The imported proto
-files will not be compiled since they have already been compiled in their own
-projects. Example:
+along with the compiled classes.
+
+Protos in dependencies (e.g. upstream jars) can be put in either in the ``compile``
+configuration or the ``protobuf`` configuration.
+
+If the dependency is put in the ``compile`` configuration, the proto files are
+extracted to an ``extracted-include-protos`` directory and added to the ``--proto_path``
+flag of the protoc command line, so that they can be imported by the proto files
+of the current project. The imported proto files will not be compiled since
+they have already been compiled in their own projects. Example:
 
 ```gradle
 dependencies {
@@ -421,15 +446,18 @@ dependencies {
 }
 ```
 
-
-If there is a project, package or published artifact that contains just protos
-files, whose compiled classes are absent, and you want to use these proto files
-in your project and compile them, you can add it to ``protobuf`` dependencies.
-Example:
+If the dependency is put in the ``protobuf`` configuration, the proto files are
+extracted to a ``extracted-protos`` directory and added to the protoc command
+line as files to compile, in the same protoc invocation as the current project's
+proto files (if any). Example:
 
 ```gradle
 dependencies {
+  // protos can be from a local package,
   protobuf files('lib/protos.tar.gz')
+  // ... a local directory,
+  protobuf files('ext/')   // NEVER use fileTree(). See issue #248.
+  // ... or an artifact from a repository
   testProtobuf 'com.example:published-protos:1.0.0'
 }
 ```
@@ -442,9 +470,22 @@ lists pre-compiled ``protoc`` artifacts that can be used by this plugin.
 
 ### IntelliJ IDEA
 
-If IntelliJ complains that the generated classes are not found, you
-can include the following block in you `build.gradle` to ask IntelliJ
-to include the generated Java directories as source folders using the IDEA plugin.
+Be sure to enable delegate IDE build/run actions to Gradle so
+that Intellij does not use its internal build mechanism to
+compile source code. This plugin ensures that code generation
+happens before Gradle's build step. If the setting is off,
+Intellij's own build system will be used instead of Gradle.
+
+Enable the setting with:
+```
+Settings -> Build, Execution, Deployment
+  -> Build Tools -> Gradle -> Runner
+  -> Delegate IDE build/run actions to gradle.
+```
+
+This plugin integrates with the ``idea`` plugin and automatically
+registers the proto files and generated Java code as sources.
+
 
 ```gradle
 apply plugin: 'idea'
@@ -460,9 +501,10 @@ clean {
 
 idea {
     module {
-        sourceDirs += file("${protobuf.generatedFilesBaseDir}/main/java");
-        // If you have additional sourceSets and/or codegen plugins, add all of them
-        sourceDirs += file("${protobuf.generatedFilesBaseDir}/main/grpc");
+        // proto files and generated Java files are automatically added as
+        // source dirs.
+        // If you have additional sources, add them here:
+        sourceDirs += file("/path/to/other/sources");
     }
 }
 ```

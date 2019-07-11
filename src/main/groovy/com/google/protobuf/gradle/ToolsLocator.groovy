@@ -26,7 +26,6 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package com.google.protobuf.gradle
 
 import org.gradle.api.GradleException
@@ -43,6 +42,20 @@ class ToolsLocator {
   private final Project project
   private final ExecutableLocator protoc
   private final NamedDomainObjectContainer<ExecutableLocator> plugins
+
+  static List<String> artifactParts(String artifactCoordinate) {
+    String artifact
+    String extension
+    String group
+    String name
+    String version
+    String classifier
+
+    (artifact, extension) = artifactCoordinate.tokenize('@')
+    (group, name, version, classifier) = artifact.tokenize(':')
+
+    return [group, name, version, classifier, extension]
+  }
 
   ToolsLocator(Project project) {
     this.project = project
@@ -79,13 +92,15 @@ class ToolsLocator {
       transitive = false
       extendsFrom = []
     }
-    def groupId, artifact, version
-    (groupId, artifact, version) = locator.artifact.split(":")
-    def notation = [group: groupId,
-                    name: artifact,
-                    version: version,
-                    classifier: project.osdetector.classifier,
-                    ext: 'exe']
+    String groupId, artifact, version, classifier, extension
+    (groupId, artifact, version, classifier, extension) = artifactParts(locator.artifact)
+    Map<String, String> notation = [
+            group:groupId,
+            name:artifact,
+            version:version,
+            classifier:classifier ?: project.osdetector.classifier,
+            ext:extension ?: 'exe',
+    ]
     Dependency dep = project.dependencies.add(config.name, notation)
 
     for (GenerateProtoTask protoTask in protoTasks) {

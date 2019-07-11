@@ -26,17 +26,22 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package com.google.protobuf.gradle
 
+import com.google.common.base.Preconditions
 import org.apache.commons.lang.StringUtils
 import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.tasks.SourceSet
-import org.gradle.api.tasks.TaskInputs
+import org.gradle.plugins.ide.idea.GenerateIdeaModule
+import org.gradle.plugins.ide.idea.model.IdeaModel
+import org.gradle.util.GUtil
 
 import java.util.regex.Matcher
 
+/**
+ * Utility classes.
+ */
 class Utils {
   /**
    * Returns the conventional name of a configuration for a sourceSet
@@ -55,17 +60,38 @@ class Utils {
         '' : StringUtils.capitalize(sourceSetName)
   }
 
+  private static final String ANDROID_BASE_PLUGIN_ID = "com.android.base"
+  private static final List<String> ANDROID_PLUGIN_IDS = [
+      'android',
+      'android-library',
+      'com.android.application',
+      'com.android.feature',
+      'com.android.instantapp',
+      'com.android.library',
+      'com.android.test',
+  ]
+
+  /**
+   * Detects if an android plugin has been applied to the project
+   */
   static boolean isAndroidProject(Project project) {
-    return project.hasProperty('android') && project.android.sourceSets
+    // Projects are marked with com.android.base plugin from version 3.0.0 up
+    // OR fall back to a list of plugin id's to support versions prior to 3.0.0
+    return project.plugins.hasPlugin(ANDROID_BASE_PLUGIN_ID) ||
+        ANDROID_PLUGIN_IDS.any { String pluginId ->
+          project.plugins.hasPlugin(pluginId)
+        }
   }
 
-  static void addFilesToTaskInputs(Project project, TaskInputs inputs, Object files) {
-    if (compareGradleVersion(project, "3.0") >= 0) {
-      inputs.file(files).skipWhenEmpty()
-    } else {
-      // source() is deprecated since Gradle 3.0
-      inputs.source(files)
-    }
+  /**
+   * Returns the compile task name for Kotlin.
+   */
+  static String getKotlinAndroidCompileTaskName(Project project, String variantName) {
+    // The kotlin plugin does not provide a utility for this.
+    // Fortunately, the naming scheme is well defined:
+    // https://kotlinlang.org/docs/reference/using-gradle.html#compiler-options
+    Preconditions.checkState(isAndroidProject(project))
+    return "compile" + GUtil.toCamelCase(variantName) + "Kotlin"
   }
 
   /**
@@ -80,6 +106,40 @@ class Utils {
       return majorVersionDiff
     }
     return gv.group(2).toInteger() - tv.group(2).toInteger()
+  }
+
+  /**
+   * Returns true if the source set is a test related source set.
+   */
+  static boolean isTest(String sourceSetOrVariantName) {
+    return sourceSetOrVariantName == "test" ||
+        sourceSetOrVariantName.toLowerCase().contains('androidtest') ||
+        sourceSetOrVariantName.toLowerCase().contains('unittest')
+  }
+
+  /**
+   * Adds the file to the IDE plugin's set of sources / resources. If the directory does
+   * not exist, it will be created before the IDE task is run.
+   */
+  static void addToIdeSources(Project project, boolean isTest, File f) {
+    IdeaModel model = project.getExtensions().findByType(IdeaModel)
+    if (model != null) {
+      // TODO(zpencer): switch to model.module.generatedSourceDirs when that API becomes stable
+      // For now, just hint to the IDE that it's a source dir or a test source dir.
+      if (isTest) {
+        model.module.testSourceDirs += f
+      } else {
+        model.module.sourceDirs += f
+      }
+      project.tasks.withType(GenerateIdeaModule).each {
+        it.doFirst {
+          // This is required because the intellij plugin does not allow adding source directories
+          // that do not exist. The intellij config files should be valid from the start even if a
+          // user runs './gradlew idea' before running './gradlew generateProto'.
+          f.mkdirs()
+        }
+      }
+    }
   }
 
   private static Matcher parseVersionString(String version) {

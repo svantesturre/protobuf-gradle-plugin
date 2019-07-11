@@ -26,13 +26,11 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package com.google.protobuf.gradle
 
-import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.Project
 import org.gradle.api.internal.file.FileResolver
-import org.gradle.api.tasks.SourceSet
+import org.gradle.api.tasks.TaskCollection
 import org.gradle.util.ConfigureUtil
 
 /**
@@ -48,7 +46,7 @@ public class ProtobufConfigurator {
    * The base directory of generated files. The default is
    * "${project.buildDir}/generated/source/proto".
    */
-  public String generatedFilesBaseDir
+  String generatedFilesBaseDir
 
   public ProtobufConfigurator(Project project, FileResolver fileResolver) {
     this.project = project
@@ -58,7 +56,7 @@ public class ProtobufConfigurator {
       tasks = new JavaGenerateProtoTaskCollection()
     }
     tools = new ToolsLocator(project)
-    taskConfigClosures = new ArrayList()
+    taskConfigClosures = []
     generatedFilesBaseDir = "${project.buildDir}/generated/source/proto"
   }
 
@@ -116,44 +114,48 @@ public class ProtobufConfigurator {
   }
 
   public class GenerateProtoTaskCollection {
-    public Collection<GenerateProtoTask> all() {
-      return project.tasks.findAll { task ->
-        task instanceof GenerateProtoTask
-      }
+    public TaskCollection<GenerateProtoTask> all() {
+      return project.tasks.withType(GenerateProtoTask)
     }
   }
 
   public class AndroidGenerateProtoTaskCollection
       extends GenerateProtoTaskCollection {
-    public Collection<GenerateProtoTask> ofFlavor(String flavor) {
-      return all().findAll { task ->
+    public TaskCollection<GenerateProtoTask> ofFlavor(String flavor) {
+      return all().matching { GenerateProtoTask task ->
         task.flavors.contains(flavor)
       }
     }
 
-    public Collection<GenerateProtoTask> ofBuildType(String buildType) {
-      return all().findAll { task ->
+    public TaskCollection<GenerateProtoTask> ofBuildType(String buildType) {
+      return all().matching { GenerateProtoTask task ->
         task.buildType == buildType
       }
     }
 
-    public Collection<GenerateProtoTask> ofVariant(String variant) {
-      return all().findAll { task ->
+    public TaskCollection<GenerateProtoTask> ofVariant(String variant) {
+      return all().matching { GenerateProtoTask task ->
         task.variant.name == variant
       }
     }
-    public Collection<GenerateProtoTask> ofNonTest() {
-      return all().findAll { task -> !task.isTestVariant }
+
+    public TaskCollection<GenerateProtoTask> ofNonTest() {
+      return all().matching { GenerateProtoTask task ->
+        !task.isTestVariant
+      }
     }
-    public Collection<GenerateProtoTask> ofTest() {
-      return all().findAll { task -> task.isTestVariant }
+
+    public TaskCollection<GenerateProtoTask> ofTest() {
+      return all().matching { GenerateProtoTask task ->
+        task.isTestVariant
+      }
     }
   }
 
   public class JavaGenerateProtoTaskCollection
       extends GenerateProtoTaskCollection {
-    public Collection<GenerateProtoTask> ofSourceSet(String sourceSet) {
-      return all().findAll { task ->
+    public TaskCollection<GenerateProtoTask> ofSourceSet(String sourceSet) {
+      return all().matching { GenerateProtoTask task ->
         task.sourceSet.name == sourceSet
       }
     }

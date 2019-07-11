@@ -7,8 +7,9 @@ android:
   components:
     - platform-tools
     - tools
-    - build-tools-23.0.3
-    - android-23
+    - build-tools-26.0.1
+    - build-tools-27.0.3
+    - android-26
     - extra-android-support
     - extra-android-m2repository
   licenses:
@@ -19,14 +20,17 @@ env:
     - GRADLE_OPTS="-Xms128m"
 
 script:
-  - ./gradlew clean assemble test --tests com.google.protobuf.gradle.plugins.ProtobufJavaPluginTest --stacktrace
-  - ./gradlew test --tests com.google.protobuf.gradle.plugins.ProtobufAndroidPluginTest --stacktrace
-
+  - ./gradlew clean assemble test --tests com.google.protobuf.gradle.ProtobufJavaPluginTest --stacktrace
+  - ./gradlew test --tests com.google.protobuf.gradle.ProtobufKotlinDslPluginTest --stacktrace
+  - ./gradlew test --tests com.google.protobuf.gradle.ProtobufAndroidPluginTest --stacktrace
+  - ./gradlew test --tests com.google.protobuf.gradle.AndroidProjectDetectionTest --stacktrace
+  - ./gradlew codenarcMain || (cat ./build/reports/codenarc/main.txt && false)
+  - ./gradlew codenarcTest || (cat ./build/reports/codenarc/test.txt && false)
 
 notifications:
   email: false
 
-sudo: false
+sudo: required
 
 before_cache:
   - rm -f $HOME/.gradle/caches/modules-2/modules-2.lock
