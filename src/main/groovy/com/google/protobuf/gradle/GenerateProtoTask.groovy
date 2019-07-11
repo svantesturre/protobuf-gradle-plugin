@@ -48,6 +48,9 @@ import org.gradle.util.ConfigureUtil
 public class GenerateProtoTask extends DefaultTask {
 
   private final List includeDirs = new ArrayList()
+
+  private final NamedDomainObjectContainer<PluginOptions> objcOpt
+
   private final NamedDomainObjectContainer<PluginOptions> builtins
   private final NamedDomainObjectContainer<PluginOptions> plugins
 
@@ -207,6 +210,7 @@ public class GenerateProtoTask extends DefaultTask {
   }
 
   public GenerateProtoTask() {
+    objcOpt = project.container(PluginOptions)
     builtins = project.container(PluginOptions)
     plugins = project.container(PluginOptions)
   }
@@ -214,6 +218,23 @@ public class GenerateProtoTask extends DefaultTask {
   //===========================================================================
   //        Configuration methods
   //===========================================================================
+
+  /**
+   * Configures the protoc builtins in a closure, which will be maniuplating a
+   * NamedDomainObjectContainer<PluginOptions>.
+   */
+  public void objcOpt(Closure configureClosure) {
+    checkCanConfig()
+    ConfigureUtil.configure(configureClosure, objcOpt)
+  }
+
+  /**
+   * Returns the container of protoc builtins.
+   */
+  public NamedDomainObjectContainer<PluginOptions> getObjcOpt() {
+    checkCanConfig()
+    return objcOpt
+  }
 
   /**
    * Configures the protoc builtins in a closure, which will be maniuplating a
@@ -341,6 +362,21 @@ public class GenerateProtoTask extends DefaultTask {
     return prefix.toString()
   }
 
+  static String makeObjcOptions(List<String> options) {
+    StringBuilder prefix = new StringBuilder()
+    if (!options.isEmpty()) {
+      options.each { option ->
+        if (prefix.length() > 0) {
+          prefix.append(',')
+        } else {
+          prefix.append("--objc_opt=")
+        }
+        prefix.append(option)
+      }
+    }
+    return prefix.toString()
+  }
+
   String getOutputDir(PluginOptions plugin) {
     return "${outputBaseDir}/${plugin.outputSubDir}"
   }
@@ -370,11 +406,14 @@ public class GenerateProtoTask extends DefaultTask {
       outputDir.mkdirs()
     }
 
-    def dirs = includeDirs*.path.collect {"-I${it}"}
-    logger.debug "ProtobufCompile using directories ${dirs}"
-    logger.debug "ProtobufCompile using files ${protoFiles}"
     def cmd = [ tools.protoc.path ]
-    cmd.addAll(dirs)
+
+    objcOpt.each { opt ->
+      String args = makeObjcOptions(opt.options)
+      if (!args.isEmpty()) {
+        cmd += "${makeObjcOptions(opt.options)}"
+      }
+    }
 
     // Handle code generation built-ins
     builtins.each { builtin ->
@@ -393,6 +432,11 @@ public class GenerateProtoTask extends DefaultTask {
       cmd += "--${name}_out=${pluginOutPrefix}${getOutputDir(plugin)}"
       cmd += "--plugin=protoc-gen-${name}=${locator.path}"
     }
+
+    def dirs = includeDirs*.path.collect {"-I${it}"}
+    logger.debug "ProtobufCompile using directories ${dirs}"
+    logger.debug "ProtobufCompile using files ${protoFiles}"
+    cmd.addAll(dirs)
 
     if (generateDescriptorSet) {
       def path = getDescriptorPath()
